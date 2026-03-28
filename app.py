@@ -6,6 +6,7 @@ from PIL import Image
 import pandas as pd
 import io
 from datetime import datetime
+import re
 
 # ----------------- إعدادات النظام الأساسية -----------------
 TARGET_COMPANY_NAME = "شركة بناء بيتكو للمقاولات شركة شخص واحد"
@@ -76,7 +77,7 @@ if st.sidebar.button("🚪 تسجيل الخروج"):
 
 st.title("نظام المراجعة والتجميع الآلي للفواتير 🧾✅")
 st.subheader(f"الشركة: {TARGET_COMPANY_NAME}")
-st.info("💡 قم برفع الفواتير. سيتم فحصها، وتجميع الفواتير الورقية، وحساب الإجمالي للمبالغ الضريبية تلقائياً.")
+st.info("💡 قم برفع الفواتير. سيقوم النظام بجمع الإجمالي الشامل لجميع الفواتير (ضريبية وورقية).")
 
 uploaded_files = st.file_uploader("قم برفع ملفات الفواتير بصيغة PDF هنا", type="pdf", accept_multiple_files=True)
 
@@ -86,25 +87,24 @@ if uploaded_files:
     all_reports_data = []
     progress_bar = st.progress(0)
     
-    # متغير لحساب إجمالي المبالغ من الفواتير الضريبية الصحيحة
-    total_tax_amount = 0.0 
+    # الإجمالي العام لجميع الفواتير بلا استثناء
+    grand_total_amount = 0.0 
     
     for idx, uploaded_file in enumerate(uploaded_files):
         text = ""
         qr_data_extracted = None
+        extracted_amount = 0.0
         
         file_report = {
             "اسم الملف": uploaded_file.name,
             "تاريخ المعالجة": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "المُراجع": st.session_state['username'],
             "نوع الفاتورة": "جاري التحديد...",
-            "حالة اسم الشركة": "غير متطابق ❌",
-            "حالة الرقم الضريبي": "غير متطابق ❌",
-            "اسم المورد (من الـ QR)": "-",
-            "الرقم الضريبي (من الـ QR)": "-",
-            "التاريخ (من الـ QR)": "-",
-            "الإجمالي (من الـ QR)": 0.0, # تم تغييره لرقم بدلاً من نص لكي يجمع في الإكسل
-            "مطابقة التشفير للشركة": "-",
+            "اسم المورد": "-",
+            "الرقم الضريبي للمورد": "-",
+            "الإجمالي": 0.0,
+            "طريقة قراءة المبلغ": "-",
+            "حالة المطابقة لشركتنا": "-",
             "النتيجة النهائية": "-"
         }
 
@@ -126,39 +126,53 @@ if uploaded_files:
                     except:
                         pass
 
-            if TARGET_COMPANY_NAME in text:
-                file_report["حالة اسم الشركة"] = "متطابق ✅"
-            if TARGET_TAX_NUMBER in text:
-                file_report["حالة الرقم الضريبي"] = "متطابق ✅"
+            # التحقق من أن الفاتورة تخص شركة بيتكو
+            is_our_company = TARGET_COMPANY_NAME in text or TARGET_TAX_NUMBER in text
+            if is_our_company:
+                file_report["حالة المطابقة لشركتنا"] = "متطابق ✅"
+            else:
+                file_report["حالة المطابقة لشركتنا"] = "غير متطابق ❌"
 
             if qr_data_extracted:
+                # ------ مسار الفواتير الضريبية ------
                 file_report["نوع الفاتورة"] = "ضريبية إلكترونية 🧾"
-                file_report["اسم المورد (من الـ QR)"] = qr_data_extracted.get(1, "غير متوفر")
-                qr_tax_num = qr_data_extracted.get(2, "غير متوفر")
-                file_report["الرقم الضريبي (من الـ QR)"] = qr_tax_num
-                file_report["التاريخ (من الـ QR)"] = qr_data_extracted.get(3, "غير متوفر")
+                file_report["اسم المورد"] = qr_data_extracted.get(1, "غير متوفر")
+                file_report["الرقم الضريبي للمورد"] = qr_data_extracted.get(2, "غير متوفر")
                 
-                # استخراج المبلغ وتحويله لرقم عشري لجمعه
                 amount_str = qr_data_extracted.get(4, "0")
                 try:
-                    amount_float = float(amount_str)
+                    extracted_amount = float(amount_str)
                 except:
-                    amount_float = 0.0
+                    extracted_amount = 0.0
                 
-                file_report["الإجمالي (من الـ QR)"] = amount_float
+                file_report["طريقة قراءة المبلغ"] = "التشفير (QR Code) - دقيق"
                 
-                if qr_tax_num == TARGET_TAX_NUMBER:
-                    file_report["مطابقة التشفير للشركة"] = "متطابق ✅"
-                    file_report["النتيجة النهائية"] = "مقبولة (ضريبية صحيحة) ✅"
-                    # إضافة المبلغ للإجمالي العام فقط إذا كانت الفاتورة صحيحة ومقبولة
-                    total_tax_amount += amount_float
+                if qr_data_extracted.get(2, "") == TARGET_TAX_NUMBER:
+                    file_report["النتيجة النهائية"] = "مقبولة (تشفير صحيح) ✅"
                 else:
-                    file_report["مطابقة التشفير للشركة"] = "غير متطابق ❌"
-                    file_report["النتيجة النهائية"] = "مرفوضة (تشفير خاطئ) ⚠️"
+                    file_report["النتيجة النهائية"] = "مرفوضة ضريبياً ⚠️"
+
             else:
-                file_report["نوع الفاتورة"] = "ورقية / بدون باركود 📄"
-                file_report["النتيجة النهائية"] = "تم التجميع (بدون مراجعة ضريبية) 📁"
-                file_report["الإجمالي (من الـ QR)"] = 0.0
+                # ------ مسار الفواتير الورقية أو العادية ------
+                file_report["نوع الفاتورة"] = "ورقية / بدون تشفير 📄"
+                file_report["النتيجة النهائية"] = "مضافة للسجل الورقي 📁"
+                
+                # البحث عن الإجمالي داخل النص العادي للفاتورة
+                pattern = r'(?:الإجمالي|المجموع|Total|Amount|الصافي)[^\d]*([\d.,]+)'
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                if matches:
+                    try:
+                        # أخذ آخر رقم تم العثور عليه (لأنه غالباً إجمالي الفاتورة في أسفل الصفحة)
+                        clean_num = matches[-1].replace(',', '')
+                        extracted_amount = float(clean_num)
+                    except:
+                        extracted_amount = 0.0
+                
+                file_report["طريقة قراءة المبلغ"] = "البحث النصي - تقريبي"
+
+            # إضافة المبلغ المستخرج (سواء من الـ QR أو من النص) إلى الإجمالي الخاص بالملف والإجمالي العام
+            file_report["الإجمالي"] = extracted_amount
+            grand_total_amount += extracted_amount
             
         except Exception as e:
             file_report["النتيجة النهائية"] = f"خطأ في القراءة: {e}"
@@ -167,27 +181,3 @@ if uploaded_files:
         progress_bar.progress((idx + 1) / len(uploaded_files))
         
         # عرض مختصر للنتيجة في الواجهة
-        if "ضريبية" in file_report["نوع الفاتورة"]:
-            icon = "✅" if "مقبولة" in file_report["النتيجة النهائية"] else "⚠️"
-            with st.expander(f"🧾 {uploaded_file.name} | الإجمالي: {file_report['الإجمالي (من الـ QR)']} ريال - ({icon})"):
-                st.write(f"- **مطابقة التشفير:** {file_report['مطابقة التشفير للشركة']}")
-                st.write(f"- **النتيجة:** {file_report['النتيجة النهائية']}")
-        else:
-            with st.expander(f"📄 {uploaded_file.name} - ورقية (تم التجميع 📁)"):
-                st.write("- هذه الفاتورة لا تحتوي على باركود ZATCA وتم إضافتها للتقرير كسجل ورقي.")
-
-    st.success("🎉 تم الانتهاء من المعالجة والتجميع بنجاح!")
-    
-    # عرض الإجمالي بشكل بارز في التطبيق
-    st.metric(label="💰 إجمالي الفواتير الضريبية المقبولة (المطابقة للشركة)", value=f"{total_tax_amount:,.2f} ريال سعودي")
-    
-    excel_file = generate_excel_report(all_reports_data)
-    st.divider()
-    st.markdown("### 📊 تحميل التقرير النهائي المجمع")
-    st.download_button(
-        label="📥 تحميل التقرير الشامل (Excel)",
-        data=excel_file,
-        file_name=f"تقرير_الفواتير_الشامل_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
